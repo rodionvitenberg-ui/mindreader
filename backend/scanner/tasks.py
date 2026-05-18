@@ -2,6 +2,7 @@ import os
 import base64
 import json
 from django.conf import settings
+from django.core.files.storage import default_storage
 from celery import shared_task
 from openai import OpenAI
 from pgvector.django import CosineDistance # Импортируем функцию измерения расстояния
@@ -15,20 +16,22 @@ client = OpenAI(
 
 def encode_image_to_base64(image_url):
     relative_path = image_url.replace(settings.MEDIA_URL, '', 1)
-    file_path = os.path.join(settings.MEDIA_ROOT, relative_path)
-    with open(file_path, "rb") as image_file:
+    # Используем default_storage.open вместо open()
+    with default_storage.open(relative_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
-
+    
 @shared_task
 def process_animal_scan(scan_id):
     try:
         scan = AnimalScan.objects.get(id=scan_id)
         
-        # 1. Получаем вектор из ПЕРВОЙ картинки для Face ID
-        # Если картинок несколько, для распознавания морды обычно хватает первой
-        first_image_path = os.path.join(settings.MEDIA_ROOT, scan.image_paths[0].replace(settings.MEDIA_URL, '', 1))
-        new_vector = get_image_embedding(first_image_path)
+        # --- ИЗМЕНЕНИЯ ЗДЕСЬ: Читаем через абстракцию хранилища ---
+        first_image_url = scan.image_paths[0]
+        relative_path = first_image_url.replace(settings.MEDIA_URL, '', 1)
         
+        with default_storage.open(relative_path, "rb") as image_file:
+            new_vector = get_image_embedding(image_file)
+            
         # 2. ИЩЕМ СОВПАДЕНИЯ В БАЗЕ (Тот самый векторный поиск)
         # Ищем профили, где косинусное расстояние < 0.15 (это означает сходство > 85%)
         matched_profile = PetProfile.objects.annotate(
