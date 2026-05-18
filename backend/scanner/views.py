@@ -69,3 +69,24 @@ class ScanResultView(APIView):
         else:
             response_data["message"] = "AI is thinking..."
             return Response(response_data, status=status.HTTP_200_OK)
+        
+class ScanResultView(APIView):
+    """
+    Polling Endpoint: GET /api/v1/scan/<int:scan_id>/
+    Возвращает статус обработки. Если завершено - отдает результаты анализа ИИ.
+    """
+    def get(self, request, scan_id):
+        # Получаем объект или отдаем 404
+        scan = get_object_or_404(AnimalScan, id=scan_id)
+        
+        # Базовый ответ содержит только статус
+        data = {
+            "status": scan.status
+        }
+        
+        # Если Celery-воркер успешно завершил задачу, добавляем полезную нагрузку
+        if scan.status == AnimalScan.ScanStatus.COMPLETED:
+            data["ai_analysis"] = scan.ai_analysis
+            data["pet_profile_id"] = scan.pet_profile_id
+            
+        return Response(data)

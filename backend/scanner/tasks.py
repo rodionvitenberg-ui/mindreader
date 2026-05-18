@@ -23,7 +23,10 @@ def encode_image_to_base64(image_url):
 @shared_task
 def process_animal_scan(scan_id):
     try:
-        scan = AnimalScan.objects.get(id=scan_id)
+        scan = AnimalScan.objects.create(
+            image_paths=saved_paths,
+            status=AnimalScan.ScanStatus.PROCESSING
+        )
         
         # --- ИЗМЕНЕНИЯ ЗДЕСЬ: Читаем через абстракцию хранилища ---
         first_image_url = scan.image_paths[0]
