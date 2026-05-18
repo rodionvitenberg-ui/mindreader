@@ -15,3 +15,6 @@ staticfiles/
 # Системные файлы ОС
 .DS_Store
 Thumbs.db
+
+.next/
+node_modules/
