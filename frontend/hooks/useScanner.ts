@@ -123,26 +123,41 @@ export const useScanner = () => {
     pollingIntervalRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/v1/scan/${scanId}/`);
-        const data = await res.json();
+        
+        // Пытаемся прочитать JSON даже если статус 500
+        const data = await res.json().catch(() => null);
+
+        if (!data) {
+           if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+           setStatus('idle');
+           return;
+        }
 
         if (data.status === 'completed') {
           if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
           setAiThoughts(data.analysis.thoughts);
-          setStatus('typing'); // Переводим UI в режим печатной машинки
+          setStatus('typing');
           
-          // Останавливаем видео через пару секунд после получения результата,
-          // чтобы захватить момент появления текста
           setTimeout(() => {
              if (mediaRecorderRef.current?.state === 'recording') {
                  mediaRecorderRef.current.stop();
              }
              setStatus('done');
           }, 3000);
+        } 
+        // ДОБАВЛЕНО: Останавливаем цикл, если ИИ упал
+        else if (data.status === 'failed' || res.status === 500) {
+          if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+          console.error("Анализ провалился:", data.error || "Неизвестная ошибка сервера");
+          setStatus('idle');
+          alert("Связь с астралом прервана. Попробуйте еще раз."); // Можно заменить на красивый UI
         }
       } catch (err) {
         console.error("Ошибка пуллинга:", err);
+        if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+        setStatus('idle');
       }
-    }, 1500); // Опрашиваем раз в 1.5 секунды
+    }, 1500);
   };
 
   return {

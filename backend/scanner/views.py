@@ -64,7 +64,7 @@ class ScanResultView(APIView):
 
         elif scan.status == AnimalScan.ScanStatus.FAILED:
             response_data["error"] = "AI analysis failed."
-            return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         else:
             response_data["message"] = "AI is thinking..."
@@ -72,21 +72,27 @@ class ScanResultView(APIView):
         
 class ScanResultView(APIView):
     """
-    Polling Endpoint: GET /api/v1/scan/<int:scan_id>/
-    Возвращает статус обработки. Если завершено - отдает результаты анализа ИИ.
+    Эндпоинт для пуллинга. Фронтенд стучится сюда, пока статус не станет 'completed'.
     """
-    def get(self, request, scan_id):
-        # Получаем объект или отдаем 404
+    def get(self, request, scan_id, *args, **kwargs):
         scan = get_object_or_404(AnimalScan, id=scan_id)
-        
-        # Базовый ответ содержит только статус
-        data = {
-            "status": scan.status
+
+        response_data = {
+            "scan_id": scan.id,
+            "status": scan.status,
+            "created_at": scan.created_at
         }
-        
-        # Если Celery-воркер успешно завершил задачу, добавляем полезную нагрузку
+
         if scan.status == AnimalScan.ScanStatus.COMPLETED:
-            data["ai_analysis"] = scan.ai_analysis
-            data["pet_profile_id"] = scan.pet_profile_id
-            
-        return Response(data)
+            response_data["analysis"] = scan.ai_analysis
+            if scan.pet_profile:
+                response_data["pet_profile_id"] = scan.pet_profile.id
+            return Response(response_data, status=status.HTTP_200_OK)
+
+        elif scan.status == AnimalScan.ScanStatus.FAILED:
+            response_data["error"] = "AI analysis failed."
+            return Response(response_data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        else:
+            response_data["message"] = "AI is thinking..."
+            return Response(response_data, status=status.HTTP_200_OK)
