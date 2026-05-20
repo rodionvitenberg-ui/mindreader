@@ -9,6 +9,10 @@ from pgvector.django import CosineDistance
 from .models import AnimalScan, PetProfile, AIPersonality
 from .ml_services import get_image_embedding
 
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 # 1. ПЕРЕКЛЮЧАЕМСЯ НА GEMINI ЧЕРЕЗ СТАНДАРТ OPENAI
 client = OpenAI(
     api_key=os.environ.get("GEMINI_API_KEY"),
@@ -80,7 +84,7 @@ def process_animal_scan(scan_id):
 
         # 2. МЕНЯЕМ МОДЕЛЬ НА GEMINI
         response = client.chat.completions.create(
-            model="gemini-1.5-flash", 
+            model="gemini-3.1-flash-lite", 
             messages=[
                 {"role": "system", "content": full_system_prompt},
                 {"role": "user", "content": image_messages}

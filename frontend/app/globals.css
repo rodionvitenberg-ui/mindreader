@@ -18,3 +18,45 @@
 .animate-float {
   animation: float 4s ease-in-out infinite;
 }
+
+@keyframes bubbleFloatOne {
+  0%, 100% { transform: translateY(0) translateX(0) scale(1); }
+  33% { transform: translateY(-10px) translateX(8px) scale(1.01); }
+  66% { transform: translateY(-4px) translateX(-6px) scale(0.99); }
+}
+
+/* Траектория 2: Диагональный дрейф для разнообразия */
+@keyframes bubbleFloatTwo {
+  0%, 100% { transform: translateY(0) translateX(0) scale(1); }
+  40% { transform: translateY(-6px) translateX(-10px) scale(0.98); }
+  75% { transform: translateY(-12px) translateX(5px) scale(1.02); }
+}
+
+/* Траектория 3: Амплитудное покачивание */
+@keyframes bubbleFloatThree {
+  0%, 100% { transform: translateY(0) translateX(0) scale(1); }
+  25% { transform: translateY(-8px) translateX(6px) scale(1.01); }
+  50% { transform: translateY(-2px) translateX(-8px) scale(0.98); }
+  75% { transform: translateY(-10px) translateX(4px) scale(1.02); }
+}
+
+/* Анимация мгновенного схлопывания (лопания) пузыря */
+@keyframes bubbleBurst {
+  0% { transform: scale(1); opacity: 1; filter: blur(0px); }
+  30% { transform: scale(1.15); opacity: 0.8; filter: blur(2px); }
+  100% { transform: scale(0.3); opacity: 0; filter: blur(15px); }
+}
+
+/* Привязываем классы к Tailwind */
+.animate-bubble-1 {
+  animation: bubbleFloatOne 6s ease-in-out infinite;
+}
+.animate-bubble-2 {
+  animation: bubbleFloatTwo 7s ease-in-out infinite;
+}
+.animate-bubble-3 {
+  animation: bubbleFloatThree 8s ease-in-out infinite;
+}
+.animate-burst {
+  animation: bubbleBurst 0.25s ease-out forwards;
+}

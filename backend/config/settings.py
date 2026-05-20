@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
+from datetime import timedelta
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework_simplejwt.token_blacklist',
     'rest_framework',
     'users',
     'scanner',
@@ -159,3 +161,20 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC' # или твоя таймзона
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
+
+# Тонкая настройка SimpleJWT
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),     # Для мобильных приложений 1 час — оптимально
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),       # Даем пользователю неделю без принудительного перезахода
+    'ROTATE_REFRESH_TOKENS': True,                     # Обновляем refresh-токен при каждом обновлении access
+    'BLACKLIST_AFTER_ROTATION': True,                  # Переносим старый refresh в блеклист (безопасность)
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,                         # Подпись идет нашим секретным ключом проекта
+    'AUTH_HEADER_TYPES': ('Bearer',),                  # Мобилки будут слать: Authorization: Bearer <token>
+}
