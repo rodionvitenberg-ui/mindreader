@@ -1,30 +1,72 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-type ScanStatus = 'idle' | 'scanning' | 'typing' | 'done';
+// Добавили статус 'holding' для удержания затвора
+type ScanStatus = 'idle' | 'holding' | 'processing' | 'typing' | 'done';
 type CameraErrorType = 'denied' | 'not-found' | 'unknown' | null;
+
+export interface ScannerProfile {
+  device_id: string;
+  current_level: number;
+  total_successful_scans: number;
+  max_hold_seconds: number;
+  extra_time_seconds: number;
+  scans_remaining_to_level_up: number;
+  next_level_required_total: number;
+}
 
 export const useScanner = () => {
   const [status, setStatus] = useState<ScanStatus>('idle');
   const [aiThoughts, setAiThoughts] = useState<string[]>([]);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<CameraErrorType>(null);
-  
-  // ДОБАВЛЕНО: Состояние направления камеры ('environment' - задняя, 'user' - фронтальная)
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
   
+  const [profile, setProfile] = useState<ScannerProfile | null>(null);
+  const [deviceId, setDeviceId] = useState<string>('');
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const videoChunksRef = useRef<Blob[]>([]);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const wakeLockRef = useRef<any>(null);
-
   const isCamLoadingRef = useRef(false);
+
+  // Контроль реактивного конвейера
+  const isHoldingRef = useRef<boolean>(false);
+  const sessionStartTimeRef = useRef<number>(0);
+  
+  // ДОБАВЛЕНО: Уникальный ID для текущей сессии удержания затвора
+  const sessionUuidRef = useRef<string>('');
+
+  useEffect(() => {
+    let id = localStorage.getItem('mindreader_device_id');
+    if (!id) {
+      // ИСПОЛЬЗУЕМ crypto.randomUUID для надежности генерации вместо Math.random
+      id = typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : 'mr_uuid_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('mindreader_device_id', id);
+    }
+    setDeviceId(id);
+    fetchProfile(id);
+  }, []);
+
+  const fetchProfile = async (currentId: string) => {
+    try {
+      const res = await fetch(`/api/v1/scanner/profile/?device_id=${currentId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setProfile(data);
+      }
+    } catch (err) {
+      console.error("Ошибка синхронизации профиля:", err);
+    }
+  };
 
   const requestWakeLock = async () => {
     if ('wakeLock' in navigator) {
       try {
         wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-        console.log("Wake Lock активирован");
       } catch (err) {
         console.warn("Wake Lock сбой:", err);
       }
@@ -33,9 +75,7 @@ export const useScanner = () => {
 
   const releaseWakeLock = () => {
     if (wakeLockRef.current) {
-      wakeLockRef.current.release().then(() => {
-        wakeLockRef.current = null;
-      });
+      wakeLockRef.current.release().then(() => { wakeLockRef.current = null; });
     }
   };
 
@@ -52,50 +92,34 @@ export const useScanner = () => {
     };
   }, []);
 
-  // Модернизированный запуск камеры с поддержкой динамического режима (mode)
   const startCamera = async (mode?: 'user' | 'environment') => {
-    if (isCamLoadingRef.current) {
-      console.log("Запрос камеры заблокирован: процесс инициализации активен.");
-      return;
-    }
+    if (isCamLoadingRef.current) return;
     isCamLoadingRef.current = true;
-
-    // Определяем текущий активный режим
     const targetMode = mode || facingMode;
 
     try {
       setCameraError(null);
-      console.log(`Инициализация камеры. Режим: ${targetMode}`);
-
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setCameraError('not-found');
         return;
       }
 
-      // Жестко тушим предыдущий стрим, чтобы освободить аппаратный поток смартфона
       if (videoRef.current && videoRef.current.srcObject) {
         const oldStream = videoRef.current.srcObject as MediaStream;
         oldStream.getTracks().forEach(track => track.stop());
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: targetMode, 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 } 
-        },
+        video: { facingMode: targetMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(e => console.error("Ошибка при video.play(): " + e.message));
+        await videoRef.current.play().catch(e => console.error(e.message));
       }
-      
       await requestWakeLock();
-      
     } catch (err: any) {
-      console.error("Ошибка доступа к камере:", err.name, "->", err.message);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setCameraError('denied');
       } else {
@@ -106,12 +130,9 @@ export const useScanner = () => {
     }
   };
 
-  // ДОБАВЛЕНО: Функция безопасного переключения камеры (Flip)
   const toggleCamera = async () => {
-    if (status !== 'idle') return; // Запрещаем переключение во время сканирования
+    if (status !== 'idle') return;
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
-    
-    // Асинхронно обновляем стейт и детерминированно перезапускаем поток
     setFacingMode(nextMode);
     await startCamera(nextMode);
   };
@@ -124,13 +145,10 @@ export const useScanner = () => {
 
       videoChunksRef.current = [];
       let mimeType = 'video/webm;codecs=vp9';
-      
       if (!MediaRecorder.isTypeSupported(mimeType)) {
         const iosTypes = ['video/mp4;codecs=avc1', 'video/quicktime', 'video/mp4'];
-        const supportedType = iosTypes.find(type => MediaRecorder.isTypeSupported(type));
-        mimeType = supportedType || '';
+        mimeType = iosTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
       }
-
       if (!mimeType) return;
 
       const recorder = new MediaRecorder(stream, { mimeType });
@@ -151,12 +169,10 @@ export const useScanner = () => {
       const video = videoRef.current;
       if (!video || video.videoWidth === 0) return resolve(null);
 
-      // ИНДУСТРИАЛЬНЫЙ СТАНДАРТ: Ограничиваем максимальную сторону кадра для ИИ
       const MAX_DIMENSION = 480; 
       let targetWidth = video.videoWidth;
       let targetHeight = video.videoHeight;
 
-      // Рассчитываем пропорции, сохраняя Aspect Ratio кадра
       if (targetWidth > targetHeight) {
         if (targetWidth > MAX_DIMENSION) {
           targetHeight = Math.round((targetHeight * MAX_DIMENSION) / targetWidth);
@@ -173,11 +189,8 @@ export const useScanner = () => {
       canvas.width = targetWidth;
       canvas.height = targetHeight;
       const ctx = canvas.getContext('2d');
-      
       if (ctx) {
-        // Отрисовываем уменьшенную копию кадра
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        // Сжатие 0.82 — идеальный баланс между весом файла и читаемостью для нейросети
         canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.82); 
       } else {
         resolve(null);
@@ -185,57 +198,66 @@ export const useScanner = () => {
     });
   };
 
-  // МОДЕРНИЗИРОВАНО: Логика серийной съемки (Burst Capture из 3-х кадров)
-  const triggerScan = async (recordVideo: boolean = false) => {
-    if (!videoRef.current || !videoRef.current.srcObject || videoRef.current.videoWidth === 0) {
-      await startCamera();
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-
-    setStatus('scanning');
+  const startHolding = useCallback(() => {
+    if (status !== 'idle') return;
+    
+    isHoldingRef.current = true;
+    sessionStartTimeRef.current = Date.now();
+    
+    // Генерируем UUID для связывания всех циклов раскадровки в одну сессию
+    sessionUuidRef.current = typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : 'session_' + Date.now() + Math.random().toString(36).substring(2, 9);
+    
+    setStatus('holding');
+    setAiThoughts([]);
     setRecordedVideoUrl(null);
     
-    if (recordVideo) {
-      startLocalRecording();
+    startLocalRecording();
+    executeScanCycle(); 
+  }, [status, deviceId]);
+
+  const stopHolding = useCallback(() => {
+    isHoldingRef.current = false;
+  }, []);
+
+  const executeScanCycle = async () => {
+    const maxHoldMs = (profile?.max_hold_seconds || 3) * 1000;
+    const elapsed = Date.now() - sessionStartTimeRef.current;
+    
+    if (!isHoldingRef.current || elapsed >= maxHoldMs) {
+      triggerExtraTimePhase();
+      return;
     }
 
     const capturedFrames: Blob[] = [];
-    console.log("Запуск серийной съемки раскадровки (3 кадра)...");
-
-    // Цикл высокоскоростного захвата временных срезов
     for (let i = 0; i < 3; i++) {
       const frameBlob = await captureFrame();
-      if (frameBlob) {
-        capturedFrames.push(frameBlob);
-        console.log(`Кадр ${i + 1}/3 успешно буферизирован.`);
-      }
-      
-      // Задаем тактическую паузу в 450мс между кадрами для фиксации динамики
-      if (i < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 450));
-      }
+      if (frameBlob) capturedFrames.push(frameBlob);
+      if (i < 2) await new Promise((r) => setTimeout(r, 400));
     }
 
     if (capturedFrames.length === 0) {
-        console.error("Не удалось получить кадры для анализа.");
-        setStatus('idle');
-        return;
+      triggerExtraTimePhase();
+      return;
     }
 
-    // Пакуем всю серию снимков в один FormData контейнер
     const formData = new FormData();
     capturedFrames.forEach((blob, index) => {
       formData.append('frames', blob, `burst_frame_${index}.jpg`);
     });
+    formData.append('device_id', deviceId);
+    
+    // ДОБАВЛЕНО: Передаем ID сессии, чтобы бэкенд не плодил теневые профили при одном удержании
+    formData.append('session_uuid', sessionUuidRef.current);
 
     try {
       const res = await fetch('/api/v1/scan/', { method: 'POST', body: formData });
-      if (!res.ok) { setStatus('idle'); return; }
+      if (!res.ok) { triggerExtraTimePhase(); return; }
       const data = await res.json();
-      if (data.scan_id) { startPolling(data.scan_id); }
+      if (data.scan_id) startPolling(data.scan_id);
     } catch (err) {
-      console.error("Ошибка сети:", err);
-      setStatus('idle');
+      triggerExtraTimePhase();
     }
   };
 
@@ -244,34 +266,59 @@ export const useScanner = () => {
       try {
         const res = await fetch(`/api/v1/scan/${scanId}/`);
         const data = await res.json().catch(() => null);
-        if (!data) {
-           if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-           setStatus('idle');
-           return;
+        
+        if (!data || data.status === 'failed') {
+          clearInterval(pollingIntervalRef.current!);
+          triggerExtraTimePhase();
+          return;
         }
+        
         if (data.status === 'completed') {
-          if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-          setAiThoughts(data.analysis.thoughts);
+          clearInterval(pollingIntervalRef.current!);
+          
+          const thoughtsList = data.analysis?.thoughts || ["Хм, пусто в голове..."];
+          setAiThoughts(prev => [...prev, ...thoughtsList]);
           setStatus('typing');
+
+          if (deviceId) fetchProfile(deviceId);
+
           setTimeout(() => {
-             if (mediaRecorderRef.current?.state === 'recording') { mediaRecorderRef.current.stop(); }
-             setStatus('done');
+            const maxHoldMs = (profile?.max_hold_seconds || 3) * 1000;
+            const elapsed = Date.now() - sessionStartTimeRef.current;
+            
+            if (isHoldingRef.current && elapsed < maxHoldMs) {
+              setStatus('holding');
+              executeScanCycle();
+            } else {
+              triggerExtraTimePhase();
+            }
           }, 3000);
-        } else if (data.status === 'failed') {
-          if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-          setStatus('idle');
+
         }
       } catch (err) {
-        if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-        setStatus('idle');
+        clearInterval(pollingIntervalRef.current!);
+        triggerExtraTimePhase();
       }
     }, 1500);
+  };
+
+  const triggerExtraTimePhase = () => {
+    setStatus('processing');
+    const extraSeconds = profile?.extra_time_seconds || 5;
+    
+    setTimeout(() => {
+      if (mediaRecorderRef.current?.state === 'recording') { 
+        mediaRecorderRef.current.stop(); 
+      }
+      setStatus('done');
+    }, extraSeconds * 1000);
   };
 
   const resetScanner = useCallback(() => {
     setStatus('idle');
     setAiThoughts([]);
     setRecordedVideoUrl(null);
+    isHoldingRef.current = false;
   }, []);
 
   return {
@@ -280,10 +327,12 @@ export const useScanner = () => {
     aiThoughts,
     recordedVideoUrl,
     cameraError,
-    facingMode,       // Экспортируем режим, чтобы UI знал, какая камера активна
-    toggleCamera,     // Функция-флиппер для кнопки селфи
+    facingMode,
+    profile,
+    toggleCamera,
     startCamera,
-    triggerScan,
+    startHolding,
+    stopHolding,
     resetScanner
   };
 };
