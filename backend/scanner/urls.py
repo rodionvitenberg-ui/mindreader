@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import ScanUploadView, ScanResultView
+from .views import ScanUploadView, ScanResultView, ScannerProfileView
 
 urlpatterns = [
     # Эндпоинты загрузки (Next.js теперь может слать без слэша)
@@ -8,5 +8,6 @@ urlpatterns = [
 
     # Эндпоинты пуллинга результатов
     path('scan/<int:scan_id>/', ScanResultView.as_view(), name='scan_result'),
-    path('scan/<int:scan_id>', ScanResultView.as_view()), # <- Добавили дубль без слэша
+    path('scan/<int:scan_id>', ScanResultView.as_view()),
+     path('scanner/profile/', ScannerProfileView.as_view(), name='scanner-profile'), # <- Добавили дубль без слэша
 ]
