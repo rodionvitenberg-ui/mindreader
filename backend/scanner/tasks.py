@@ -1,3 +1,5 @@
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 import os
 import json
 from django.conf import settings
@@ -184,11 +186,38 @@ def process_animal_scan(scan_id):
         # Начисляем опыт и проверяем Level Up
         calculate_level_up(scan)
         
+        # ДОБАВЛЕНО: ОТПРАВКА УСПЕШНОГО СООБЩЕНИЯ В WEBSOCKET
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'scan_{scan.id}',
+            {
+                'type': 'scan_message', # Это вызывает метод scan_message в нашем Consumer'е
+                'message': {
+                    'status': 'completed',
+                    'analysis': ai_data,
+                    'pet_profile_id': matched_profile.id
+                }
+            }
+        )
+        
         return {"status": "success", "pet_profile_id": matched_profile.id}
         
     except Exception as e:
         print(f"Error processing scan {scan_id}: {str(e)}")
         AnimalScan.objects.filter(id=scan_id).update(status=AnimalScan.ScanStatus.FAILED)
+        
+        # ДОБАВЛЕНО: ОТПРАВКА СООБЩЕНИЯ ОБ ОШИБКЕ В WEBSOCKET
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'scan_{scan_id}',
+            {
+                'type': 'scan_message',
+                'message': {
+                    'status': 'failed',
+                    'error': str(e)
+                }
+            }
+        )
         return {"status": "error", "message": str(e)}
     
 def calculate_level_up(scan):

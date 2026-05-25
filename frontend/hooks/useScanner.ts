@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { saveSession } from '@/lib/db'; // ДОБАВЛЕНО: Импорт базы данных
 
 // Добавили статус 'holding' для удержания затвора
 type ScanStatus = 'idle' | 'holding' | 'processing' | 'typing' | 'done';
@@ -27,21 +28,25 @@ export const useScanner = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const videoChunksRef = useRef<Blob[]>([]);
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // ВЕБСОКЕТЫ: Заменили pollingIntervalRef на socketRef
+  const socketRef = useRef<WebSocket | null>(null);
+  
   const wakeLockRef = useRef<any>(null);
   const isCamLoadingRef = useRef(false);
 
   // Контроль реактивного конвейера
   const isHoldingRef = useRef<boolean>(false);
   const sessionStartTimeRef = useRef<number>(0);
-  
-  // ДОБАВЛЕНО: Уникальный ID для текущей сессии удержания затвора
   const sessionUuidRef = useRef<string>('');
+  
+  // Рефы для IndexedDB
+  const recordedBlobRef = useRef<Blob | null>(null);
+  const latestThoughtsRef = useRef<string[]>([]);
 
   useEffect(() => {
     let id = localStorage.getItem('mindreader_device_id');
     if (!id) {
-      // ИСПОЛЬЗУЕМ crypto.randomUUID для надежности генерации вместо Math.random
       id = typeof crypto !== 'undefined' && crypto.randomUUID 
         ? crypto.randomUUID() 
         : 'mr_uuid_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -156,6 +161,7 @@ export const useScanner = () => {
       recorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunksRef.current.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(videoChunksRef.current, { type: mimeType });
+        recordedBlobRef.current = blob; // Сохраняем для IndexedDB
         setRecordedVideoUrl(URL.createObjectURL(blob));
       };
       recorder.start();
@@ -204,14 +210,15 @@ export const useScanner = () => {
     isHoldingRef.current = true;
     sessionStartTimeRef.current = Date.now();
     
-    // Генерируем UUID для связывания всех циклов раскадровки в одну сессию
     sessionUuidRef.current = typeof crypto !== 'undefined' && crypto.randomUUID 
         ? crypto.randomUUID() 
         : 'session_' + Date.now() + Math.random().toString(36).substring(2, 9);
     
     setStatus('holding');
     setAiThoughts([]);
+    latestThoughtsRef.current = [];
     setRecordedVideoUrl(null);
+    recordedBlobRef.current = null;
     
     startLocalRecording();
     executeScanCycle(); 
@@ -247,59 +254,74 @@ export const useScanner = () => {
       formData.append('frames', blob, `burst_frame_${index}.jpg`);
     });
     formData.append('device_id', deviceId);
-    
-    // ДОБАВЛЕНО: Передаем ID сессии, чтобы бэкенд не плодил теневые профили при одном удержании
     formData.append('session_uuid', sessionUuidRef.current);
 
     try {
       const res = await fetch('/api/v1/scan/', { method: 'POST', body: formData });
       if (!res.ok) { triggerExtraTimePhase(); return; }
       const data = await res.json();
-      if (data.scan_id) startPolling(data.scan_id);
+      
+      // ВЕБСОКЕТЫ: Подключаемся к каналу вместо старта пуллинга
+      if (data.scan_id) connectWebSocket(data.scan_id);
     } catch (err) {
       triggerExtraTimePhase();
     }
   };
 
-  const startPolling = (scanId: number) => {
-    pollingIntervalRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/v1/scan/${scanId}/`);
-        const data = await res.json().catch(() => null);
-        
-        if (!data || data.status === 'failed') {
-          clearInterval(pollingIntervalRef.current!);
-          triggerExtraTimePhase();
-          return;
-        }
-        
-        if (data.status === 'completed') {
-          clearInterval(pollingIntervalRef.current!);
-          
-          const thoughtsList = data.analysis?.thoughts || ["Хм, пусто в голове..."];
-          setAiThoughts(prev => [...prev, ...thoughtsList]);
-          setStatus('typing');
+  // ВЕБСОКЕТЫ: Новая функция подключения
+  const connectWebSocket = (scanId: number) => {
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
 
-          if (deviceId) fetchProfile(deviceId);
+    const wsBaseUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
+    const socket = new WebSocket(`${wsBaseUrl}/ws/scan/${scanId}/`);
+    socketRef.current = socket;
 
-          setTimeout(() => {
-            const maxHoldMs = (profile?.max_hold_seconds || 3) * 1000;
-            const elapsed = Date.now() - sessionStartTimeRef.current;
-            
-            if (isHoldingRef.current && elapsed < maxHoldMs) {
-              setStatus('holding');
-              executeScanCycle();
-            } else {
-              triggerExtraTimePhase();
-            }
-          }, 3000);
-
-        }
-      } catch (err) {
-        clearInterval(pollingIntervalRef.current!);
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.status === 'failed') {
+        socket.close();
         triggerExtraTimePhase();
+        return;
       }
-    }, 1500);
+      
+      if (data.status === 'completed') {
+        socket.close();
+        
+        const thoughtsList = data.analysis?.thoughts || ["Хм, пусто в голове..."];
+        
+        // Синхронизируем стейт и реф для IndexedDB
+        setAiThoughts(prev => {
+          const updatedThoughts = [...prev, ...thoughtsList];
+          latestThoughtsRef.current = updatedThoughts;
+          return updatedThoughts;
+        });
+        
+        setStatus('typing');
+
+        if (deviceId) fetchProfile(deviceId);
+
+        setTimeout(() => {
+          const maxHoldMs = (profile?.max_hold_seconds || 3) * 1000;
+          const elapsed = Date.now() - sessionStartTimeRef.current;
+          
+          if (isHoldingRef.current && elapsed < maxHoldMs) {
+            setStatus('holding');
+            executeScanCycle();
+          } else {
+            triggerExtraTimePhase();
+          }
+        }, 3000);
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      socket.close();
+      triggerExtraTimePhase();
+    };
   };
 
   const triggerExtraTimePhase = () => {
@@ -311,6 +333,19 @@ export const useScanner = () => {
         mediaRecorderRef.current.stop(); 
       }
       setStatus('done');
+
+      // Ждем 150мс сборки видео и кладем сессию в IndexedDB
+      setTimeout(() => {
+        saveSession({
+          id: sessionUuidRef.current || `scan_${Date.now()}`,
+          timestamp: Date.now(),
+          targetName: 'UNKNOWN_ENTITY', // В будущем будем подтягивать из JSON
+          emotion: 'Анализ завершен',
+          videoBlob: recordedBlobRef.current,
+          thoughts: latestThoughtsRef.current
+        });
+      }, 150);
+
     }, extraSeconds * 1000);
   };
 
@@ -319,6 +354,14 @@ export const useScanner = () => {
     setAiThoughts([]);
     setRecordedVideoUrl(null);
     isHoldingRef.current = false;
+    
+    recordedBlobRef.current = null;
+    latestThoughtsRef.current = [];
+    
+    // ВЕБСОКЕТЫ: Закрываем соединение при сбросе
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
   }, []);
 
   return {

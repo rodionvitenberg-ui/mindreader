@@ -16,8 +16,6 @@ class ScanUploadView(APIView):
     def post(self, request, *args, **kwargs):
         files = request.FILES.getlist('frames')
         device_id = request.data.get('device_id')
-        
-        # ДОБАВЛЕНО: Извлекаем ID сессии
         session_uuid = request.data.get('session_uuid')
         
         if not files:
@@ -39,7 +37,6 @@ class ScanUploadView(APIView):
         else:
             profile, _ = UserScannerProfile.objects.get_or_create(device_id=device_id)
 
-        # ДОБАВЛЕНО: Сохраняем session_uuid в базу
         scan = AnimalScan.objects.create(
             user=user_obj,
             device_id=device_id,
@@ -47,6 +44,16 @@ class ScanUploadView(APIView):
             image_paths=saved_paths,
             status=AnimalScan.ScanStatus.PROCESSING
         )
+
+        # ВОССТАНОВЛЕНО: Отправляем задачу в Celery после успешного сохранения в БД
+        transaction.on_commit(lambda: process_animal_scan.delay(scan.id))
+
+        # ВОССТАНОВЛЕНО: Возвращаем корректный HTTP-ответ для фронтенда
+        return Response({
+            "scan_id": scan.id,
+            "status": scan.status,
+            "message": "Frames received. AI analysis started."
+        }, status=status.HTTP_202_ACCEPTED)
 
 
 class ScanResultView(APIView):
